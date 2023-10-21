@@ -1,0 +1,270 @@
+;;; UTF-8(BOMなし。BOM付きはNGです)
+;;;
+;;; CT-ARK (RaspberryPiPico firmware)
+;;; Copyright (c) 2023 Harumakkin.
+;;; SPDX-License-Identifier: MIT
+
+; /SLIO <= /SLTSL and /IOREQ
+
+;----------------------------------------------------------------------------------------------
+;125MHz用
+;----------------------------------------------------------------------------------------------
+.program pio_cartridge_125
+.side_set 3				; bit2=GP22(D0_DIR), bit1=GP21(C_D0_G), bit0=GP20(AD0_AD8_G)
+.origin 0
+ 	nop					side 0b001 [3]
+ 	nop					side 0b001 [3]
+start_wait0:
+	wait 1 gpio 8		side 0b001		; /SLRW が非アクティブになるまで待つ
+	wait 0 gpio 8		side 0b001		; /SLRW がアクティブになるまで待つ
+	nop					side 0b001 [1]
+	jmp pin wr_func		side 0b001		; /RD が非アクティブなら メモリライトと判断し /WRのチェックへ
+
+rd_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [2]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	; 上位からのデータがosrに格納されるまで待つ。
+	out pindirs, 8		side 0b001		; OSRの8ビットを使用して、GPIO先頭8本を出力に設定する
+										;	上位処理がTX FIFOへ書き込みを行うまでここで待機する。
+										;	上位処理がTX FIFOに書き込むデータは、下記の形式を守ること。
+										;		b31-b16 = 0固定
+										;		b15-b8  = 出力する1byteデータ
+										;		b7-b0   = 1固定
+										;	b7-b0の1を使用して、GPIO 0-7を出力に変更する。
+										; 	ここでOSR(TX FIFO)へのデータ入力待ちになるので、サイドセットは0b001のままにし、
+										;	データバスバッファはまだMSX→Picoの向きを維持する。
+										;	上位処理がTX FIFOへの入力をせずに、ここでSMをリスタートさせることがあるので、
+										;	リスタートしてもバッファの向きはMSX→Picoを維持できる。
+	out pins, 8			side 0b101		; GPIO先頭8本にデータ出力（同時にデータバスバッファをMSX←Picoに切り替える）
+	wait 1 gpio 9		side 0b101		; /RDが非アクティブになるまで待つ
+	out pindirs, 8		side 0b011		; OSRの残りの16ビットの内8ビット分を使用して、GPIO先頭8本を入力に設定する
+	out null, 8			side 0b001		; OSRの残り8ビット分を破棄する
+	nop					side 0b001 [2]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+
+wr_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [2]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	nop					side 0b001 [3]
+	nop					side 0b001 [2]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+	
+;;----------------------------------------------------------------------------------------------
+;;170MHz用
+;;----------------------------------------------------------------------------------------------
+.program pio_cartridge_170
+.side_set 3				; bit2=GP22(D0_DIR), bit1=GP21(C_D0_G), bit0=GP20(AD0_AD8_G)
+.origin 0
+	nop					side 0b001 [3]
+	nop					side 0b001 [3]
+start_wait0:
+	wait 1 gpio 8		side 0b001		; /SLRW が非アクティブになるまで待つ
+	wait 0 gpio 8		side 0b001		; /SLRW がアクティブになるまで待つ
+	nop					side 0b001 [2]
+	jmp pin wr_func		side 0b001		; /RD が非アクティブなら メモリライトと判断し /WRのチェックへ
+
+rd_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [3]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	; 上位からのデータがosrに格納されるまで待つ。
+	out pindirs, 8		side 0b001		; OSRの8ビットを使用して、GPIO先頭8本を出力に設定する
+										;	上位処理がTX FIFOへ書き込みを行うまでここで待機する。
+										;	上位処理がTX FIFOに書き込むデータは、下記の形式を守ること。
+										;		b31-b16 = 0固定
+										;		b15-b8  = 出力する1byteデータ
+										;		b7-b0   = 1固定
+										;	b7-b0の1を使用して、GPIO 0-7を出力に変更する。
+										; 	ここでOSR(TX FIFO)へのデータ入力待ちになるので、サイドセットは0b001のままにし、
+										;	データバスバッファはまだMSX→Picoの向きを維持する。
+										;	上位処理がTX FIFOへの入力をせずに、ここでSMをリスタートさせることがあるので、
+										;	リスタートしてもバッファの向きはMSX→Picoを維持できる。
+	out pins, 8			side 0b101		; GPIO先頭8本にデータ出力（同時にデータバスバッファをMSX←Picoに切り替える）
+	wait 1 gpio 9		side 0b101		; /RDが非アクティブになるまで待つ
+	out pindirs, 8		side 0b011		; OSRの残りの16ビットの内8ビット分を使用して、GPIO先頭8本を入力に設定する
+	out null, 8			side 0b001		; OSRの残り8ビット分を破棄する
+	nop					side 0b001 [2]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+
+wr_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [3]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	nop					side 0b001 [3]
+	nop					side 0b001 [3]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+
+
+;;----------------------------------------------------------------------------------------------
+;;240MHz用
+;;----------------------------------------------------------------------------------------------
+.program pio_cartridge_240
+.side_set 3				; bit2=GP22(D0_DIR), bit1=GP21(C_D0_G), bit0=GP20(AD0_AD8_G)
+.origin 0
+	nop					side 0b001 [3]
+	nop					side 0b001 [3]
+	nop					side 0b001 [1]
+start_wait0:
+	wait 1 gpio 8		side 0b001		; /SLRW が非アクティブになるまで待つ
+	wait 0 gpio 8		side 0b001		; /SLRW がアクティブになるまで待つ
+	nop					side 0b001 [3]
+	nop					side 0b001 [0]
+	jmp pin wr_func		side 0b001		; /RD が非アクティブなら メモリライトと判断し /WRのチェックへ
+
+rd_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [3]
+	nop					side 0b010 [1]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	; 上位からのデータがosrに格納されるまで待つ。
+	out pindirs, 8		side 0b001		; OSRの8ビットを使用して、GPIO先頭8本を出力に設定する
+										;	上位処理がTX FIFOへ書き込みを行うまでここで待機する。
+										;	上位処理がTX FIFOに書き込むデータは、下記の形式を守ること。
+										;		b31-b16 = 0固定
+										;		b15-b8  = 出力する1byteデータ
+										;		b7-b0   = 1固定
+										;	b7-b0の1を使用して、GPIO 0-7を出力に変更する。
+										; 	ここでOSR(TX FIFO)へのデータ入力待ちになるので、サイドセットは0b001のままにし、
+										;	データバスバッファはまだMSX→Picoの向きを維持する。
+										;	上位処理がTX FIFOへの入力をせずに、ここでSMをリスタートさせることがあるので、
+										;	リスタートしてもバッファの向きはMSX→Picoを維持できる。
+	out pins, 8			side 0b101		; GPIO先頭8本にデータ出力（同時にデータバスバッファをMSX←Picoに切り替える）
+	wait 1 gpio 9		side 0b101		; /RDが非アクティブになるまで待つ
+	out pindirs, 8		side 0b011		; OSRの残りの16ビットの内8ビット分を使用して、GPIO先頭8本を入力に設定する
+	out null, 8			side 0b001		; OSRの残り8ビット分を破棄する
+	nop					side 0b001 [2]
+	nop					side 0b001 [3]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+
+wr_func:
+	; 制御、データ、アドレスバスの計32bitを読み込んでisrへ格納する（上位へ渡す）
+	in pins,16			side 0b001		; {データバス＋制御バス}16bitを読み込む
+	nop					side 0b010 [3]
+	nop					side 0b010 [3]
+	nop					side 0b010 [1]
+	in pins,16			side 0b010		; {アドレスバス}16bitを読み込む
+	nop					side 0b001 [3]
+	nop					side 0b001 [3]
+	nop					side 0b001 [0]
+	jmp start_wait0		side 0b001		; 先頭に戻る
+
+
+
+;----------------------------------------------------------------------------------
+; 参考）sm_config_set_clkdiv( &c, 15.625f ); の設定値
+; 1.0		// 125MHz
+; 4.0		// 31.25MHz
+; 7.8125	// 16M(実測では15Mhzだった、、、）
+; 10.0		// 12.5MHz
+; 12.50		// 10M
+; 15.625	// 8MHz
+; 31.25		// 4MHz
+; 100.0		// 1.25MHz
+; 125.0		// 1M
+; 1000.0	// 125KHz
+; 10000.0	// 12.5KHz
+;			// (min 1.9kHz)
+;----------------------------------------------------------------------------------
+
+% c-sdk {
+static inline void pio_program_init(
+	pio_sm_config c,
+	PIO pio,
+	uint state_machine,
+	uint prog_addr,
+	uint start_gpio,	// GP_D0_A0
+	uint gpio_num,		// GP_PICO_X_A15 - GP_D0_A0 + 1;
+	uint gpio_jmp_pin,	// GP_RD_A9
+	uint start_spin,
+	uint spin_num
+){
+	// PIOの動作クロック 125MHz / 1 = 125MHz
+	static const float STATEMACHINE_CLOCK = 1;
+	sm_config_set_clkdiv(&c, STATEMACHINE_CLOCK );
+
+	for (uint t = 0; t < gpio_num; ++t)
+	 	pio_gpio_init( pio, start_gpio + t);
+	pio_sm_set_consecutive_pindirs(pio, state_machine, start_gpio, gpio_num, false/*IN*/);
+
+	sm_config_set_out_pins(&c, start_gpio, 8);
+	sm_config_set_out_shift(&c, true, true, 32);		// shift right, auto-pull, threshold
+	sm_config_set_in_pins(&c, start_gpio);
+	sm_config_set_in_shift(&c, false, true, 32);		// shift left, auto-push, threshold
+
+	// IN命令を実行すると、start_gpio+0のGPIOの値がbit0、start_gpio+1のGPIOの値がbit1 
+	// というようにマッピングされた"値"が生成され、
+	// ISRは指定ビット数分シフトして空いた領域に、この"値"が論理和される。
+	// ISRのシフト方向の設定と、"値"の構造（各ビットとGPIOの関係）は関係が無いことに注意する。
+	// 本プログラムでは、ISRには、最上位ビットから
+	// [SLIO][CS12][MERQ][IOREQ],[SLTSL][WR][RD][SIRW], [D7]...[D0], [AD15]..[AD0]
+
+	// sideset
+	for (uint t = 0; t < spin_num; ++t)
+		pio_gpio_init( pio, start_spin + t);	// この時点で、pio_gpio_initされたGPIOピンはLレベルになるようだ
+	pio_sm_set_consecutive_pindirs(pio, state_machine, start_spin, spin_num, true/*OUT*/);
+	sm_config_set_sideset_pins(&c, start_spin);
+
+	// 
+	sm_config_set_jmp_pin(&c, gpio_jmp_pin);
+	pio_sm_clear_fifos(pio, state_machine);
+
+	// Start
+	pio_sm_init(pio, state_machine, prog_addr, &c);
+	pio_sm_set_enabled(pio, state_machine, true);
+}
+static inline void pio_cartridge_125_program_init(
+	PIO pio,
+	uint state_machine,
+	uint prog_addr,
+	uint start_gpio,	// GP_D0_A0
+	uint gpio_num,		// GP_PICO_X_A15 - GP_D0_A0 + 1;
+	uint gpio_jmp_pin,	// GP_RD_A9
+	uint start_spin,
+	uint spin_num
+){
+	pio_sm_config c = pio_cartridge_125_program_get_default_config(prog_addr);
+	pio_program_init(c, pio, state_machine, prog_addr, start_gpio, gpio_num, gpio_jmp_pin, start_spin, spin_num);
+}
+
+static inline void pio_cartridge_170_program_init(
+	PIO pio,
+	uint state_machine,
+	uint prog_addr,
+	uint start_gpio,	// GP_D0_A0
+	uint gpio_num,		// GP_PICO_X_A15 - GP_D0_A0 + 1;
+	uint gpio_jmp_pin,	// GP_RD_A9
+	uint start_spin,
+	uint spin_num
+){
+	pio_sm_config c = pio_cartridge_170_program_get_default_config(prog_addr);
+	pio_program_init(c, pio, state_machine, prog_addr, start_gpio, gpio_num, gpio_jmp_pin, start_spin, spin_num);
+}
+
+static inline void pio_cartridge_240_program_init(
+	PIO pio,
+	uint state_machine,
+	uint prog_addr,
+	uint start_gpio,	// GP_D0_A0
+	uint gpio_num,		// GP_PICO_X_A15 - GP_D0_A0 + 1;
+	uint gpio_jmp_pin,	// GP_RD_A9
+	uint start_spin,
+	uint spin_num
+){
+	pio_sm_config c = pio_cartridge_240_program_get_default_config(prog_addr);
+	pio_program_init(c, pio, state_machine, prog_addr, start_gpio, gpio_num, gpio_jmp_pin, start_spin, spin_num);
+}
+
+
+%}

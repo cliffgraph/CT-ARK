@@ -1,0 +1,95 @@
+;・掛け算
+; from http://hp.vector.co.jp/authors/VA054130/%EF%BC%BA%EF%BC%98%EF%BC%90%E3%81%AE%E4%B9%97%E9%99%A4%E7%AE%97.txt
+; ８ビット×８ビット＝８ビット以内
+; 8bit By 8bit = 8bit multiplication
+; B=multiplicand, C=multiplier -> A=result
+MULTI8:
+	.start
+		xor	A
+	.@1
+		inc	C
+		dec	C
+		ret	Z
+		srl	C
+		jr	NC, .noadd
+		add	A,B
+	.noadd
+		sla	B
+		jr	.@1
+		ret
+
+;８ビット×８ビット＝１６ビット　その１
+; 8bit By 8bit = 16bit multiplication
+; A=multiplicand, E=multiplier -> HL=result
+MULTI8X8R16:
+	.start
+		ld	D, 0
+		ld	HL, 0
+		ld	B, 8	; counter
+	.@1
+		rrca
+		jr	nc, .noadd
+		add	HL,DE
+	.noadd
+		sla	E
+		rl	D
+		djnz .@1
+		ret
+
+;・割り算
+;８ビット÷８ビット　結果と余り
+; 8bit / 8bit division
+; A=dividend, B=divisor -> C=result, A=remainder
+DIV8R:
+	.@1
+		sub	B
+		jr	c, .remain
+		inc	C
+		jr	.@1
+	.remain
+		add	A, B
+		ret
+
+
+
+; refer to MSX-Datapack "WHEREAMI.MAC"
+; @param reg.A	target PageNo(only 1 or 2)
+; @return SlotNo infomation of PageNo
+;
+; Aレジスタにページ番号を入れる（1 or 2）と、そのページに現れているスロットの番号を返す
+;このスロット番号は、RDSLT と同じ形式
+B_RSLREG	equ 0x0138
+W_EXPTBL	equ	0xfcc1		;slot is expanded or not
+WHEREPAGE:
+	.start
+		ld		E, A
+		ld		B, A
+		call	B_RSLREG
+	.@1
+		rrca
+		rrca
+		djnz	.@1
+		and		0x03
+		ld      C, A			; c <= primary slot number of target page
+		ld      B, 0
+		ld      HL, W_EXPTBL
+		add     HL, BC
+		ld      A, (HL)
+		and     0x80
+		or		C
+		ld		C, A			; c <= flag with ...
+		;
+		inc     HL
+		inc     HL
+		inc     HL
+		inc     HL				; point to SLTTBL entry
+		ld		A, E
+		dec		A
+		ld      A, (HL)
+		jr		z, .finish
+		rlca
+		rlca
+	.finish
+		and		0x0c
+		or		C
+		ret

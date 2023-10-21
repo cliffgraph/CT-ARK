@@ -1,0 +1,1449 @@
+﻿; @title CT-ARL ROM Reder.
+; @auther Harumakkin
+; @note 
+
+; bios
+B_RDSLT				equ 0x000C	;; BIOS: 指定スロットの、指定アドレスの値を読みだす A=スロット操作、HL=アドレス、変更レジスタAF、BC、DE
+B_ENASLT			equ 0x0024	;; BIOS: 指定ページを指定スロットに切り替える
+B_CLS 				equ 0x00C3	;; BIOS: 画面クリア 入力=ゼロフラグセット
+B_CHPUT 			equ 0x00A2	;; BIOS: 1文字表示 入力A=出力する文字コード
+B_CHGET				equ 0x009F	;; BIOS: 1文字入力 (入力待ちあり), 出力A=入力された文字コード
+B_POSIT				equ 0x00C6	;; BIOS: カーソルの移動, 入力H=カーソルのX座標, L=Y座標
+B_KILBUF 			equ 0x0156	;; BIOS: キーバッファのクリア
+
+; keycode
+KEY_UP				equ 0x1E
+KEY_RIGHT			equ 0x1C
+KEY_LEFT			equ 0x1D
+KEY_DOWN			equ 0x1F
+KEY_ESC				equ 0x1B
+KEY_RETURN			equ 0x0D
+KEY_TAB				equ 0x09
+KEY_BS				equ 0x08
+KEY_DEL				equ 0x7f
+
+; ct-ark command
+CMD_NONE			equ 0x00
+CMD_REQ_FILELIST	equ 0x01
+CMD_SET_ROM			equ 0x02
+CMD_DEL_ROMFILE		equ 0x03
+CMD_WR_FILE			equ 0x04
+CMD_WRT_FLASHROM	equ 0x05
+CMD_BAS2ROM			equ 0x06
+
+;カーソル
+CURSOR_CHAR			equ '>'
+BLANK_CHAR			equ ' '
+
+;================================================================================================
+; MSX ROMヘッダ領域
+;================================================================================================
+org 0x4000
+rom_header:
+	db		"AB"
+	dw		INIT_CT_ARK			;; INIT
+	dw		0x0000				;; STATEMENT
+	dw		0x0000				;; DEVICE
+	dw		0x0000				;; TEXT
+	db		0x00,0x00,0x00
+	db		0x00,0x00,0x00
+
+;================================================================================================
+; プログラムの開始
+;================================================================================================
+INIT_CT_ARK:
+		call	CLEAR_SCREEN
+		call	SETUP_ENV
+		call	SCREEN0_40x24
+	.screen_start
+		call	PRINT_TITLE
+		call	PRINT_VERSION
+		call	PRINT_PICO_CLOCK
+		; WA初期化
+		ld		A, 1
+		ld		(WA.sel_no), A
+		xor		A
+		ld		(MSXPICOIF_A.cmd), A
+		ld		(MSXPICOIF_A.cmd_res), A
+		ld		(MSXPICOIF_A.boot_rom_name), A
+		ld		(MSXPICOIF_B.status), A
+		ld		(MSXPICOIF_B.num), A
+		; ファイルリストをCT-ARKに要求する
+		ld		A, CMD_REQ_FILELIST
+		call	FUNC_CMD_TO_CTARK
+		; ファイルリスト表示
+		call	PRINT_ROM_FILES
+		; ファイル選択カーソルを表示しておく
+		ld		A, CURSOR_CHAR
+		call	.func_print_sel_cur
+		; 選択ROMファイル名を表示する
+		ld		HL, 0x1117	;	locate(17,23)
+		call	B_POSIT
+		ld		HL, MSXPICOIF_A.boot_rom_name
+		call	PRINT_STR
+		call	B_KILBUF
+
+	.rootmenu_begin						;; ルートメニュー（ファイル選択）
+		ld		A, (WA.sel_no)
+		ld		HL, WA.str_num
+		call	DEC2TOSTR
+		ld		HL, 0x0417				;; locate(4,23)
+		call	B_POSIT
+		ld		HL, WA.str_num
+		call	PRINT_STR
+	.wait_key							;; キー入力待ち
+		call	GET_CHAR
+		jr		z, .wait_key
+		call	FUNC_PRINT_KEYCODE		;; デバッグ用にキーコードを画面右上に表示する
+	.chk_cur_up
+		cp		KEY_UP
+		jr		nz, .chk_cur_down
+		ld		A, (WA.sel_no)
+		cp		1
+		jp		z, .mainloop_end		;; 先頭位置なら何もしない
+		ld		A, 0xff			; -1
+		call	.func_update_cur_pos
+		jp		.mainloop_end
+	.chk_cur_down
+		cp		KEY_DOWN
+		jr		nz, .chk_cur_right
+		ld		A, 0x01			; +1
+		call	.func_update_cur_pos
+		jp		.mainloop_end
+	.chk_cur_right
+		cp		KEY_RIGHT
+		jr		nz, .chk_cur_left
+		ld		A, 0x12			; +18
+		call	.func_update_cur_pos
+		jr		.mainloop_end
+	.chk_cur_left
+		cp		KEY_LEFT
+		jr		nz, .chk_ret
+		ld		A, 0xee			; -18
+		call	.func_update_cur_pos
+		jr		.mainloop_end
+	.chk_ret
+		cp		KEY_RETURN
+		jr		nz, .chk_esc
+		call	FUNC_ACT_MENU
+		ld		A, (ACTMENU.sel_no)
+		jr		.chk_set_rom
+	.chk_esc
+		cp		KEY_ESC
+		jr		nz, .mainloop_end
+		call	CLEAR_SCREEN			; 画面消去して、ファイルのリスト表示かやり直し
+		jp		.screen_start
+	.mainloop_end
+		jp		.rootmenu_begin
+
+	;----------------------------------------------------------------------------------
+	;----------
+	.chk_set_rom
+		cp		0x01
+		jr		nz, .chk_del_rom
+		call	.cmd_set_rom_num
+		jr		.chk_ret_end
+	.chk_del_rom
+		cp		0x02
+		jr		nz, .chk_write_file
+		call	.cmd_del_rom
+		jr		.chk_ret_end
+	.chk_write_file
+		cp		0x03
+		jr		nz, .chk_write_picoflashrom
+		call	.cmd_write_file
+		jr		.chk_ret_end
+	.chk_write_picoflashrom
+		cp		0x04
+		jr		nz, .chk_rbast_to_rom
+		call	.cmd_write_picoflashrom
+		jr		.chk_ret_end
+	.chk_rbast_to_rom
+		cp		0x05
+		jr		nz, .chk_ret_end
+		call	.cmd_bas_to_rom
+	.chk_ret_end
+		call	CLEAR_SCREEN			; 画面消去して、ファイルのリスト表示かやり直し
+		jp		.screen_start
+	;----------
+	.cmd_set_rom_num
+		; BOOT ROMイメージとして選択したROMファイルの番号ををCT-ARKに伝える
+		ld		A, (WA.sel_no)
+		ld		B, A
+		ld		A, CMD_SET_ROM	;; Set number of boot rom file
+		call	FUNC_CMD_TO_CTARK
+		ret	
+	;----------
+	.cmd_del_rom
+		; 削除対象のROMファイルの番号をCT-ARKに伝え、SDカードから消してもらう
+		call 	FUNC_DELETE_QUERY
+		ld		A, (DELQRY.sel_no)
+		or		A
+		ret		z
+		ld		A, (WA.sel_no)
+		ld		B, A
+		ld		A, CMD_DEL_ROMFILE
+		call	FUNC_CMD_TO_CTARK
+		ret	
+	;----------
+	.cmd_write_file
+		call	FUNC_INPUT_FILE_NAME		; -> FNAME.len, name[8+1]
+		ld		A, (FNAME.len)
+		or		A
+		ret		z
+		call	FUNC_FWRITE_QUERY
+		ld		A, (FNAMEQRY.sel_no)
+		or		A
+		ret 	z
+		call	FUNC_FWRITE_PROGRESS		; 32KROM(slot.2) -> ファイル エクスポートを実行する
+		ret
+	;----------
+	.cmd_write_picoflashrom
+		; 対象のROMファイルの番号と希望ファイル名称をCT-ARKに伝え、PicoのFlashROMに書き込みしてもらう
+		; 実行問い合わせ
+		call 	FUNC_FLASHROM_QUERY
+		ld		A, (FLASHLQRY.sel_no)
+		or		A
+		ret		z
+		; 選択ファイル番号
+		ld		A, (WA.sel_no)
+		ld		B, A
+		;
+		ld		A, CMD_WRT_FLASHROM
+		call	FUNC_CMD_TO_CTARK
+		ret	
+	;----------
+	.cmd_bas_to_rom
+		; 対象のファイルの番号をCT-ARKに伝え、BAS->ROM変換したファイルを作成してもらう
+		call	FUNC_INPUT_FILE_NAME		; -> FNAME.len, name[8+1]
+		ld		A, (FNAME.len)
+		or		A
+		ret		z
+		;
+		ld		B, A
+		ld		HL, FNAME.name
+		ld		IX, MSXPICOIF_A.cmd_fwr_name
+	.@1
+		ld		A, (HL)
+		cp		' '
+		jr		z, .@2
+		cp		0x00
+		jr		z, .@2
+		ld		(IX+0), A
+		inc		HL
+		inc		IX
+		djnz	.@1
+	.@2
+		xor		A
+		ld		(IX+0), A	; "\0"
+		call 	FUNC_BASROM_QUERY
+		ld		A, (BASROMQRY.sel_no)
+		or		A
+		ret		z
+		ld		A, (WA.sel_no)
+		ld		B, A
+		ld		A, CMD_BAS2ROM
+		call	FUNC_CMD_TO_CTARK
+		ret	
+	;----------
+	.func_update_cur_pos
+		ld		E, A
+		ld		A, BLANK_CHAR
+		call	.func_print_sel_cur
+		ld		A, (WA.sel_no)
+		add		A, E
+		jr		z, .noupdate
+		cp		54+1
+		jr		z, .noupdate	; A>=55, ではカーソル位置を更新しない
+		jr		nc, .noupdate
+		ld		(WA.sel_no), A
+	.noupdate
+		ld		A, CURSOR_CHAR
+		call	.func_print_sel_cur
+		ret
+	;----------
+	; 選択ファイル番号の表示（あまり意味はないけど）
+	.func_print_sel_cur
+	;	A=cur-char
+		ld		D, A
+		ld		A, (WA.sel_no)		; 1~
+		or		A
+		ret		z
+		dec		A
+		ld		BC, 0x1200			; A / 18 => { C=result, A=remainder }
+		call	DIV8R				; use ABC
+		add		A, 3				; locate(x,4-1)
+		ld		L, A
+		ld		B, 13
+		call	MULTI8
+		ld		H, A
+		inc		H
+		inc		L
+		call	B_POSIT
+		ld		A, D
+		call	B_CHPUT
+		ret
+
+;=========================================
+; 画面クリア
+;=========================================
+CLEAR_SCREEN:
+	.start
+		push	AF
+		xor		A			;; zフラグのセット
+		call	B_CLS
+		pop		AF
+		ret
+
+;=========================================
+; タイトルの表示
+;=========================================
+PRINT_TITLE:
+	.start
+		ld		HL, .lns_title
+		call	PRINT_LNS
+		ld		HL, .lns_bottom
+		call	PRINT_LNS
+		ret
+	.lns_title
+		db		3		;; lines
+		dw		0x0101	;; locate
+		db		"CT-ARK MENU v", 0x00
+		db		"2023 Harumakkin.", 0x00
+		db		"========================================", 0x00
+	.lns_bottom
+		db		2		;; lines
+		dw		0x0116	;; locate(1,22)
+		db		"========================================", 0x00
+		db		"No.         ROM:", 0x00
+
+
+;=========================================
+; Ver表示
+;=========================================
+PRINT_VERSION:
+	.start
+		ld		HL, 0x0e01
+		call	B_POSIT
+		ld		HL, MSXPICOIF_A.ver
+		call	PRINT_STR
+		ret
+
+;=========================================
+; クロック表示
+;=========================================
+PRINT_PICO_CLOCK:
+	.start
+		ld		HL, 0x1301
+		call	B_POSIT
+		ld		HL, MSXPICOIF_A.pico_clock
+		call	PRINT_STR
+		ret
+
+;=========================================
+; 準備
+;=========================================
+SETUP_ENV:
+	.start
+		ld		HL, .str_mess
+		call	PRINT_STR
+		; ページ1のスロットを調べ、ページ2にも同じスロットを呼び出す
+		ld		A, 1
+		call	WHEREPAGE		; A <= スロット番号
+		ld		HL,0x8000		; h bit.8-7 = page No.2
+		call	B_ENASLT
+	.open_the_ark
+		xor		A
+		ld		(MSXPICOIF_A.ver), A
+		; CT-ARK の ROMリスト／吸出しなどの機能を有効化する
+		; 0x8100 にマジックワードを書き込む
+		ld		HL, .str_magic_word
+		ld		DE, MSXPICOIF_A.id
+		ld		BC, 12
+		ldir
+	; 応答を待つ
+	.waitres
+		ld		A, (MSXPICOIF_A.ver)
+		or		A
+		jr		z, .waitres
+		ret
+	.str_magic_word
+		db		"OPEN THE ARK"
+	.str_mess
+		db		"waiting for CT-ARK to open.", 0x00
+
+;=========================================
+; PICO側へコマンドを送信する
+;=========================================
+FUNC_CMD_TO_CTARK:
+	;	A=CMD
+	;	B=CMD_VALUE
+	.start
+		push	HL
+		ld		C, A
+		ld		HL, MSXPICOIF_A.cmd_value
+		ld		(HL), B
+		ld		B, CMD_NONE
+		ld		HL, MSXPICOIF_A.cmd
+		ld		(HL), B
+		ld		HL, MSXPICOIF_A.cmd_res
+		ld		(HL), B
+		ld		HL, MSXPICOIF_A.cmd
+		ld		(HL), C
+	.wait_res
+		ld		HL, MSXPICOIF_A.cmd_res
+		ld		A, C
+		cp		(HL)
+		jr		nz, .wait_res
+		pop		HL
+		ret	
+
+;=========================================
+; 入力文字のコードを16進数で表示する(動作確認用)
+;=========================================
+FUNC_PRINT_KEYCODE:
+	.start
+;		push	AF
+;		ld		B, A				;; BC <- input charctor code
+;		ld		HL, WA.str_num
+;		call	HEX8TOSTR
+;		ld		HL, 0x2601			; locate(38,1)
+;		call	B_POSIT
+;		ld		HL, WA.str_num
+;		call	PRINT_STR
+;		pop		AF
+		ret
+
+;=========================================
+; 選択ファイルに対するアクションのメニュー
+;=========================================
+FUNC_ACT_MENU:
+	.init
+		ld		HL, .lns_act_menu
+		call	PRINT_LNS
+	.select
+		ld		HL, (.lns_act_menu+1)
+		inc		H
+		inc		H
+		inc		L
+		ld		B, 6					; 項目数
+		xor		A
+		call	VSELECT
+		ld		(ACTMENU.sel_no), A		; 選択結果
+		ret
+	.lns_act_menu
+		db		9		;; lines
+		dw		0x0105	;; locate
+		;db		"+--------------------------------+ ", 0x00
+		;db		"|  CANCEL                        | ", 0x00	; Select No. 0
+		;db		"|  SET to boot ROM file          | ", 0x00	; Select No. 1
+		;db		"|  DELETE ROM file.              | ", 0x00	; Select No. 2
+		;db		"|  32KB ROM(Slot2) -> ROM FILE   | ", 0x00	; Select No. 3
+		;db		"|  ROM FILE -> Pico FlashROM     | ", 0x00	; Select No. 3
+		;db		"|  BAS FILE -> ROM file          | ", 0x00	; Select No. 3
+		;db		"+-------------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                                   ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57, 0x01,0x59, " ", 0x00
+		db	0x01,0x56, "  CANCEL                        ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "  SET to boot ROM file          ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "  DELETE ROM file.              ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "  32KB ROM(Slot2) -> ROM FILE   ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "  ROM FILE -> Pico FlashROM     ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "  BAS FILE -> ROM file          ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                                  ", " ", 0x00
+
+
+;=========================================
+; 削除実行を問い合わせ
+;=========================================
+FUNC_DELETE_QUERY:
+	.init
+		ld		HL, .lns_delete_query
+		call	PRINT_LNS
+	.select
+		ld		A, (.lns_delete_query+2)
+		add		A, 11
+		ld		H, A
+		ld		A, (.lns_delete_query+1)
+		add		A, 3
+		ld		L, A
+		ld		B, 2
+		xor		A
+		call	VSELECT
+		ld		(DELQRY.sel_no), A		; 選択結果
+		ret
+	.lns_delete_query
+		db		7		;; lines
+		dw		0x0409	;; locate
+		;db		"+--------------------------------+ ", 0x00
+		;db		"|  Delete the selected file. OK? | ", 0x00
+		;db		"+--------------------------------+ ", 0x00
+		;db		"|          > CANCEL              | ", 0x00
+		;db		"|            OK                  | ", 0x00
+		;db		"+-------------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                                   ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57, 0x01,0x59, " ", 0x00
+		db	0x01,0x56, "  Delete the selected file. OK? ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57, 0x01,0x53, " ", 0x00
+		db	0x01,0x56, "            CANCEL              ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "            OK                  ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                                  ", " ", 0x00
+
+;=========================================
+; ファイル名の入力
+;=========================================
+FUNC_INPUT_FILE_NAME:
+		ld		HL, .lns_input_filename
+		call	PRINT_LNS
+		call	B_KILBUF
+
+		; 入力文字空欄をいったん空白文字で埋める
+		ld		HL, FNAME.name
+		ld		A, ' '
+		ld		B, 8
+	.fill_loop
+		ld		(HL), A
+		inc		HL
+		djnz	.fill_loop
+		xor		A ;\0
+		ld		(HL), A
+		;ld		(FNAME.len), A		; 入力文字数
+
+		; 入力文字空欄に選択ファイルの名称をコピーする
+		ld		A, (WA.sel_no)
+		ld		HL, FNAME.name
+		call	COPY_FILESPEC
+		ld		A, C
+		ld		(FNAME.len), A		; 入力文字数
+
+	.inputloop_begin
+		; 入力文字の表示
+		ld		HL, 0x070d
+		call	B_POSIT
+		ld		HL, FNAME.name
+		call	PRINT_STR:
+		; カーソル位置
+		ld		HL, 0x070d
+		ld		A, (FNAME.len)
+		add		A, H
+		ld		H, A
+		call	B_POSIT
+
+		; 入力待ち
+		call	B_CHGET
+		call	FUNC_PRINT_KEYCODE		;; デバッグ用にキーコードを画面右上に表示する
+	.chk_esc
+		cp		KEY_ESC
+		jr		nz, .chk_ret
+		xor		A
+		ld		(FNAME.len), A
+		jr		.input_end
+	.chk_ret
+		cp		KEY_RETURN
+		jr		nz, .chk_bs
+		jr		.input_end
+	.chk_bs
+		cp		KEY_BS
+		jr		nz, .chk_chars
+		ld		A, (FNAME.len)
+		or		A
+		jr		z, .inputloop_begin
+		dec		A
+		ld		(FNAME.len), A
+		ld		D, 0
+		ld		E, A
+		ld		HL, FNAME.name
+		add		HL, DE
+		ld		A, ' '
+		ld		(HL), A
+		jr		.inputloop_begin
+	.chk_chars
+		call	CHK_FILESPEC_CHAR
+		jr		nz, .inputloop_end
+	.addchar
+		ld		B, A
+		ld		A, (FNAME.len)
+		cp		8
+		jr		z, .inputloop_end
+		ld		D, 0
+		ld		E, A
+		ld		HL, FNAME.name
+		add		HL, DE
+		inc		A
+		ld		(FNAME.len), A
+		ld		A, B
+		ld		(HL), A
+	.inputloop_end
+		jp		.inputloop_begin
+	.input_end
+		ret
+
+	.lns_input_filename
+		db		9		;; lines
+		dw		0x040A	;; locate
+		;db		"+-----------------------------+ ", 0x00
+		;db		"| Input filename              | ", 0x00
+		;db		"+-----------------------------+ ", 0x00
+		;db		"| >                           | ", 0x00
+		;db		"+-----------------------------+ ", 0x00
+		;db		"| Max 8 length.               | ", 0x00
+		;db		"| Ignore file extension(.xxx) | ", 0x00
+		;db		"+----------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                                ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x59, " ", 0x00
+		db	0x01,0x56, " Input filename              ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x53, " ", 0x00
+		db	0x01,0x56, " >                           ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x53, " ", 0x00
+		db	0x01,0x56, " Max 8 length.               ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, " Ignore file extension(.xxx) ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                                ", " ", 0x00
+
+
+;=========================================
+; ファイル書き込み実行の問い合わせ
+;=========================================
+FUNC_FWRITE_QUERY:
+	.init
+		xor		A
+		ld		(FNAMEQRY.sel_no), A
+		ld		HL, .lns_fwrite_query
+		call	PRINT_LNS
+	.select
+		ld		A, (.lns_fwrite_query+2)
+		add		A, 9
+		ld		H, A
+		ld		A, (.lns_fwrite_query+1)
+		add		A, 3
+		ld		L, A
+		ld		B, 2
+		xor		A
+		call	VSELECT
+		ld		(FNAMEQRY.sel_no), A		; 選択結果
+		ret
+	.lns_fwrite_query
+		db		7		;; lines
+		dw		0x070E	;; locate
+		;db		"+---------------------------+ ", 0x00
+		;db		"| Slot.2 > ROM file, OK?    | ", 0x00
+		;db		"+---------------------------+ ", 0x00
+		;db		"|       > CANCEL            | ", 0x00
+		;db		"|         OK                | ", 0x00
+		;db		"+--------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                              ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x59, " ", 0x00
+		db	0x01,0x56, " Slot.2 > ROM file, OK?    ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x53, " ", 0x00
+		db	0x01,0x56, "         CANCEL            ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "         OK                ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                             ", " ", 0x00
+
+;=========================================
+; FlashROMへの書き込み実行の問い合わせ
+;=========================================
+FUNC_FLASHROM_QUERY:
+	.init
+		ld		HL, .lns_query
+		call	PRINT_LNS
+	.select
+		ld		A, (.lns_query+2)
+		add		A, 9
+		ld		H, A
+		ld		A, (.lns_query+1)
+		add		A, 3
+		ld		L, A
+		ld		B, 2
+		xor		A
+		call	VSELECT
+		ld		(FLASHLQRY.sel_no), A		; 選択結果
+		ret
+	.lns_query
+		db		7		;; lines
+		dw		0x070B	;; locate
+		;db		"+---------------------------+ ", 0x00
+		;db		"| ROM file > FlashROM OK?   | ", 0x00
+		;db		"+---------------------------+ ", 0x00
+		;db		"|       > CANCEL            | ", 0x00
+		;db		"|         OK                | ", 0x00
+		;db		"+--------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                              ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x59, " ", 0x00
+		db	0x01,0x56, " ROM file > FlashROM OK?   ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x53, " ", 0x00
+		db	0x01,0x56, "         CANCEL            ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "         OK                ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                             ", " ", 0x00
+
+;=========================================
+; BASIC -> ROM 変換実行の問い合わせ
+;=========================================
+FUNC_BASROM_QUERY:
+	.init
+		ld		HL, .lns_query
+		call	PRINT_LNS
+	.select
+		ld		A, (.lns_query+2)
+		add		A, 9
+		ld		H, A
+		ld		A, (.lns_query+1)
+		add		A, 3
+		ld		L, A
+		ld		B, 2
+		xor		A
+		call	VSELECT
+		ld		(BASROMQRY.sel_no), A		; 選択結果
+		ret
+	.lns_query
+		db		7		;; lines
+		dw		0x070E	;; locate
+		;db		"+---------------------------+ ", 0x00
+		;db		"| BAS file > ROM file OK?   | ", 0x00
+		;db		"+---------------------------+ ", 0x00
+		;db		"|       > CANCEL            | ", 0x00
+		;db		"|         OK                | ", 0x00
+		;db		"+--------------[ESC]:CANCEL-+ ", 0x00
+		;db		"                              ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x59, " ", 0x00
+		db	0x01,0x56, " BAS file > ROM file OK?   ", 0x01,0x56, " ", 0x00
+		db	0x01,0x54,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,
+		db	0x01,0x53, " ", 0x00
+		db	0x01,0x56, "         CANCEL            ", 0x01,0x56, " ", 0x00
+		db	0x01,0x56, "         OK                ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                             ", " ", 0x00
+
+
+;=========================================
+; ROM読み込みとファイル書き込みの処理
+;=========================================
+FUNC_FWRITE_PROGRESS:
+		ld		HL, .lns_fwrite_progress
+		call	PRINT_LNS
+		call	B_KILBUF
+		ld		A, 0
+
+	.progloop_begin
+		push	AF
+		ld		IX, .start_addrs
+		ld		B, 0
+		ld		C, A
+		rlc		C				; b *= 2
+		add		IX, BC
+		ld		L, (IX+0)
+		ld		H, (IX+1)
+		ld		(FWRPROG.read_ptr), HL
+		ld		HL, MSXPICOIF_C.block_data
+		ld		(FWRPROG.write_ptr), HL
+		ld		BC, 0x2000
+
+	.loop1
+		push	BC
+		call	GET_CHAR
+		pop		BC
+		cp		KEY_ESC			; ESCキーで中断する
+		jr		z, .abort
+		;
+		push	BC
+		ld		BC, (FWRPROG.read_ptr)
+		push	BC
+		; 読み取りアドレスを表示
+		ld		HL, WA.str_num
+		call	HEX16TOSTR
+		ld		HL, 0x1B14			; locate()
+		call	B_POSIT
+		ld		HL, WA.str_num
+		call	PRINT_STR
+		pop		HL ;<-BC
+		ld		A, 0x02				; basic slot no.2
+		call	B_RDSLT				; A = read value
+		inc		HL
+		ld		(FWRPROG.read_ptr), HL
+		ld		HL, (FWRPROG.write_ptr)
+		ld		(HL), A
+		inc		HL
+		ld		(FWRPROG.write_ptr), HL
+		pop		BC
+		dec		BC
+		ld		A, B
+		or		C
+		jr		nz, .loop1
+		pop		AF
+		push	AF
+		call	.func_exec	; 書き込み依頼
+		pop		AF
+		inc		A
+		cp		4			
+		jr		nz, .progloop_begin
+		jr		.prog_end
+
+	.start_addrs
+		dw		0x4000, 0x6000, 0x8000, 0xA000
+
+	.abort
+		pop		AF
+		call	B_KILBUF
+
+	.prog_end
+		ret
+
+	.func_exec
+		ld		C, A
+		ld		A, (FNAME.len)
+		ld		B, A
+		ld		HL, FNAME.name
+		ld		IX, MSXPICOIF_A.cmd_fwr_name
+	.@1
+		ld		A, (HL)
+		cp		' '
+		jr		z, .@2
+		cp		0x00
+		jr		z, .@2
+		ld		(IX+0), A
+		inc		HL
+		inc		IX
+		djnz	.@1
+	.@2
+		xor		A
+		ld		(IX+0), A	; "\0"
+		ld		B, C
+		ld		A, CMD_WR_FILE
+		call	FUNC_CMD_TO_CTARK
+		ret
+
+	.lns_fwrite_progress
+		db		4		;; lines
+		dw		0x0A13	;; locate
+		;db		"+---------------------+ ", 0x00
+		;db		"| Read address : xxxx | ", 0x00
+		;db		"+--------[ESC]:CANCEL-+ ", 0x00
+		;db		"                        ", 0x00
+		; ┃ 0x01,0x56
+		; ━ 0x01,0x57
+		; ┏:0x01,0x58,  ┓:0x01,0x59
+		; ┣:0x01,0x54,  ┫:0x01,0x53
+		; ┗	0x01,0x5A,  ┛:0x01,0x5B
+		db	0x01,0x58,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,
+		db	0x01,0x57, 0x01,0x59, " ", 0x00
+		db	0x01,0x56, " READ ADDRESS : xxxx ", 0x01,0x56, " ", 0x00
+		db	0x01,0x5A,
+		db	0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,0x01,0x57,  0x01,0x57,0x01,0x57,0x01,0x57,
+		db	"[ESC]:CANCEL", 0x01,0x57, 0x01,0x5B, " ", 0x00
+		db	"                     ", " ", " ", 0x00
+
+; ==========================================================
+; 選択ファイルのファイル名（除く拡張子）を指定域にコピーする
+; ==========================================================
+; @param A ファイル番号 1～
+; @param HL コピー先
+; @return C 文字数
+; @usereg AF,BC,DE,HL,IX
+COPY_FILESPEC:
+		or		A
+		ret		z
+	;
+		push	HL
+		pop		IX
+		ld		C, 0
+		dec		A
+		ld		E, 14
+		call	MULTI8X8R16
+		ld		DE, MSXPICOIF_B.file_list
+		add		HL, DE
+		inc		HL
+	.copy_loop
+		ld		A, (HL)
+		inc		HL
+		or		A
+		jr		z, .copy_end
+		cp		'.'
+		jr		z, .copy_end
+		cp		' '
+		jr		z, .copy_end
+		ld		(IX+0), A
+		inc		IX
+		inc		C
+		jr		.copy_loop
+	.copy_end
+		ret
+
+; =====================================
+; SCREEN 0, WIDTH40 に設定する
+; =====================================
+SCREEN0_40x24:
+.INITXT		equ 0x006C	;; BIOS: 画面を TEXT1 モード (40*24) に初期化
+.LINL40		equ 0xF3AE	;; B_INITXT: 1 行の幅
+.TATNAM		equ 0xF3B3	;; B_INITXT: パターンネーム・テーブル
+.TXTCGP		equ 0xF3B7	;; B_INITXT: パターンジェネレータ・テーブル
+	.start
+		ld		A, 40
+		ld		HL, .LINL40
+		ld		(HL), A
+		ld		HL, 0x0000
+		ld		(.TATNAM), HL
+		ld		HL, 0x0800
+		ld		(.TXTCGP), HL
+		call	.INITXT
+		ret
+
+; =====================================
+; lns構造の文字列を表示する
+; =====================================
+; HL = pointer of window structure
+; 使用レジスタ AL, B, HL, IX
+PRINT_LNS:
+	.start
+		push	HL
+		pop		IX
+		ld		B, (IX+0)	;; lines
+		inc		IX
+		ld		L, (IX+0)	;; locate
+		inc		IX
+		ld		H, (IX+0)
+		inc		IX
+	.step1
+		call	B_POSIT
+		inc		L
+		push	HL
+		
+		push	IX
+		pop		HL
+		call	PRINT_STR
+		push	HL
+		pop		IX
+		
+		pop		HL
+		djnz	.step1
+		ret
+
+; =====================================
+; 0x00終端の文字列を表示する
+; =====================================
+; HL = 文字列へのアドレス
+; 変更レジスタ HL, AF
+PRINT_STR:
+	.start
+		ld		A, (HL)
+		inc		HL
+		or		A
+		ret		z
+		call	B_CHPUT
+		jr		.start
+
+PRINT_CHARS:
+	; A = char
+	; B = num
+	.start
+		call	B_CHPUT
+		djnz	.start
+		ret
+
+; =====================================
+; 16bitを四桁の１６進数文字列に変換する
+; =====================================
+; @param BC value
+; @param HL dest ptr
+HEX16TOSTR:
+	.start
+		xor		A
+		ld		D, A
+
+		rrc		B
+		rrc		B
+		rrc		B
+		rrc		B
+		ld		A, B
+		call	TOSTR_ONECONV
+		rrc		B
+		rrc		B
+		rrc		B
+		rrc		B
+		ld		A, B
+		call	TOSTR_ONECONV
+		rrc		C
+		rrc		C
+		rrc		C
+		rrc		C
+		ld		A, C
+		call	TOSTR_ONECONV
+		rrc		C
+		rrc		C
+		rrc		C
+		rrc		C
+		ld		A, C
+		call	TOSTR_ONECONV
+		ld		(HL), D		;; '\0'
+		ret
+
+; =====================================
+; 二桁の１０進数文字列に変換する（00形式)
+; =====================================
+; @param A value
+; @param HL dest ptr
+DEC2TOSTR:
+	.start
+		push	BC
+		ld		BC, 0x0a00
+		call	DIV8R			; C=十の位、A=一の位
+		ld		B, A
+		ld		A, '0'
+		add		A, C
+		ld		(HL), A
+		inc		HL
+		ld		A, '0'
+		add		A, B
+		ld		(HL), A
+		inc		HL
+		xor		A
+		ld		(HL), A
+		pop		BC
+		ret
+
+; =====================================
+; 8bitを二桁の１６進数文字列に変換する
+; =====================================
+; @param B value
+; @param HL dest ptr
+HEX8TOSTR:
+	.start
+		xor		A
+		ld		D, A
+
+		rrc		B
+		rrc		B
+		rrc		B
+		rrc		B
+		ld		A, B
+		call	TOSTR_ONECONV
+		rrc		B
+		rrc		B
+		rrc		B
+		rrc		B
+		ld		A, B
+		call	TOSTR_ONECONV
+		ld		(HL), D		;; '\0'
+		ret
+
+TOSTR_ONECONV:
+	; A=4bit-val
+	; D=0
+	.start
+		and		0x0f
+		ld		E, A
+		ld		IX, .chars
+		add		IX, DE
+		ld		A, (IX+0)
+		ld		(HL), A
+		inc		HL
+		ret
+	.chars
+		db		"0123456789ABCDEF"
+
+; =====================================
+;キーボードバッファからキーコードを取得する
+; =====================================
+; B_CHGET(009FH)を使用しないので、入力待ちを行いません
+; バッファにキーコードがない場合、z=ONで返る。
+; キーコードが取得できた場合、A=キーコード、z=offとなります
+; *変更レジスタ AF
+GET_CHAR:
+		B_CHSNS		equ 0x009C
+		B_DCOMPR 	equ 0x0020
+		W_GETPNT	equ 0xF3FA
+		W_KEYBUF	equ 0xFBF0
+		D_BUFEND	equ 0xFC18
+	.start
+		call	B_CHSNS			;;空なら即終了
+		ret		z
+		;
+		push	HL
+		ld		HL, (W_GETPNT)
+		ld		A, (HL)
+		push	AF
+		inc		HL
+		push	DE
+		ld		DE, D_BUFEND
+		call	B_DCOMPR
+		pop		DE
+		jr		nz, .step1
+		ld		HL, W_KEYBUF	;;ポインタを先頭に戻す
+	.step1
+		ld		(W_GETPNT), HL
+		pop		AF
+		pop		HL
+		ret
+
+; =====================================
+; ファイルリストの表示（一列目から表示）
+; =====================================
+PRINT_ROM_FILES:
+	.start
+		ld		A, (MSXPICOIF_B.status)
+		or		A
+		jr		nz, .print
+		; 「SDカードにアクセスできない」
+		ld		HL, (.nosdcard)
+		call	B_POSIT
+		ld		HL, .nosdcard+2
+		call	PRINT_STR
+		jr		.finish
+	.print
+		ld		HL, MSXPICOIF_B.file_list
+		ld		(WA.ptr),HL			; 読み出し先頭ポインタ
+		ld		A, 1				; 左上座標 (1,4)
+		ld		(WA.file_x),A
+		ld		B, 3				; 3 列
+	.colum
+		push	BC
+		ld		A, 4				; 最初のY座標
+		ld		(WA.file_y),A
+		ld		B, 18				; 18 行
+	.low
+		push	BC
+		; 表示位置
+		ld		HL, (WA.file_xy)
+		call	B_POSIT
+		inc		L
+		ld		(WA.file_xy), HL
+		; 1件ファイル名を表示
+		ld		HL, (WA.ptr)
+		push	HL
+		call	PRINT_STR
+		pop		HL
+		; 次の1件へポインタを進める
+		ld		DE, 14				; 1件分領域のサイズ
+		add		HL, DE
+		ld		(WA.ptr), HL
+		pop		BC
+		djnz	.low
+		; 次の列へ
+		ld		A, (WA.file_x)
+		add		A, 13				; X方向の1件の表示幅
+		ld		(WA.file_x), A
+		pop		BC
+		djnz	.colum
+	.finish
+		ret
+
+	.nosdcard
+		dw	0x0205
+		db	"Could not access SD card...", 0x00
+
+
+; ===========================================
+; ファイル名に使用できる文字かをチェックする
+; ==========================================
+; @param A = char
+; @return if z=on, OK.
+; @usereg BC, HL, F
+CHK_FILESPEC_CHAR:
+	.chk_etc
+		ld		BC, 76
+		ld		HL, .enabled_chars
+		cpir
+		ret
+	.enabled_chars
+		db	"$&#@!%'()-{}~_"				; 14
+		db	"0123456789"					; 10
+		db	"abcdefghijklmnopqrstuvwxyz"	; 26
+		db	"ABCDEFGHIJKLMNOPQRSTUVWXYZ"	; 26
+		; ひらがな カタカナ は使えません。
+
+; ===========================================
+; 選択メニュー, RETERN:決定、ESC:キャンセル
+; ==========================================
+VSELECT:
+; @param HL	locate
+; @param B number of items
+; @param A start sel_no 0-
+; @return A select no
+	.init
+		ld		(WA_VSELECT.home_xy), HL	; x,y
+		ld		(WA_VSELECT.sel_no), A
+		ld		C, CURSOR_CHAR
+		call	.print_cur				; 初期位置に選択カーソルを表示
+		dec		B
+		ld		A, B
+		ld		(WA_VSELECT.max_no), A
+		call	B_KILBUF
+	.wait_key
+		call	GET_CHAR
+		jr		z, .wait_key
+		call	FUNC_PRINT_KEYCODE
+	.chk_up
+		cp		KEY_UP
+		jr		nz, .chk_down
+		ld		A, (WA_VSELECT.sel_no)
+		or		A
+		jr		z, .loop_end			;; 先頭位置なら何もしない
+		ld		A, 0xff					; -1
+		call	.update_cur_pos
+		jr		.loop_end
+	.chk_down
+		cp		KEY_DOWN
+		jr		nz, .chk_ret
+		ld		A, (WA_VSELECT.sel_no)
+		ld		HL, WA_VSELECT.max_no
+		cp		(HL)
+		jr		z, .loop_end			;; 末尾位置なら何もしない
+		ld		A, 0x01					; +1
+		call	.update_cur_pos
+		jr		.loop_end
+	.chk_ret
+		cp		KEY_RETURN
+		jr		z, .menu_end
+	.chk_esc
+		cp		KEY_ESC
+		jr		nz, .loop_end
+		xor		A
+		ld		(WA_VSELECT.sel_no), A
+		jr		.menu_end
+	.loop_end
+		jp		.wait_key
+	.menu_end
+		ld		A, (WA_VSELECT.sel_no)
+		ret
+
+	.update_cur_pos
+	; A=step
+		ld		E, A
+		ld		C, BLANK_CHAR
+		ld		A, (WA_VSELECT.sel_no)
+		ld		B, A
+		call	.print_cur
+		ld		C, CURSOR_CHAR
+		ld		A, B
+		add		A, E
+		ld		(WA_VSELECT.sel_no), A
+		call	.print_cur
+		ret
+
+	.print_cur
+	; A=sele_no
+	; C=char
+	; usereg HL, A, C
+		ld		HL, (WA_VSELECT.home_xy);
+		add		A, L
+		ld		L, A
+		call	B_POSIT
+		ld		A, C
+		call	B_CHPUT
+		ret
+
+;================================================================================================
+; ツール類（先頭位置を特定できないので、プログラムの最後でインクルードしておく）
+;================================================================================================
+include "tools.z80"
+
+;================================================================================================
+; 作業ワークエリア
+;================================================================================================
+; 0x4000-0x5DFF 7KB Menu-program.
+; 0x5E00-0x5EFF	256	work-ram
+; 0x5F00-0x5FFF	256 Picoとの通信を行うためのエリアA
+; 0x6000-0x7fff	8KB Picoとの通信を行うためのエリアB
+org 0x5E00
+WA:
+	.str_num	ds	5	; 4+1
+	.file_xy
+	.file_y		ds	1
+	.file_x		ds	1
+	.ptr		ds	2
+	.sel_no		ds	1	; ファイル選択の番号 1～
+
+ACTMENU:		; 選択ファイルのへのアクション
+	.sel_no		ds	1
+
+DELQRY:			; 削除問い合わせ
+	.sel_no		ds	1
+
+FLASHLQRY:		; FlashROM書き込みの問い合わせ
+	.sel_no		ds	1
+
+BASROMQRY:
+	.sel_no		ds	1
+
+FNAME:			; ファイル名称の入力
+	.name		ds	8
+	.name_term	ds	1
+	.len		ds	1	; 文字長
+
+FNAMEQRY:		; ファイル書き込み問い合わせ
+	.sel_no		ds	1
+
+FWRPROG:
+	.read_ptr	ds	2*2
+	.write_ptr	ds	2*2
+
+WA_VSELECT:
+	.home_xy	ds	1*2
+	.max_no		ds	1	; アイテム数-1
+	.sel_no		ds	1	; 0～
+
+;================================================================================================
+;CT-ARK(Pico)との通信を行うためのエリアA
+;================================================================================================
+org 0x5F00
+MSXPICOIF_A:
+	.id
+			; ここにこの文字列を書き込むとPico側がコマンドを受け付けるモードになる
+			; それまではタダのROMとして動作する
+			ds	12	; "OPEN THE ARK"
+
+	.ver
+			; idが書き込まれると、Pico側のVer文字列が格納される
+			ds	5+1	; "xx.xx" + \0
+
+	.pico_clock
+			; idが書き込まれると、Picoの動作周波数[Mhz]が文字列で格納される ex)"125"
+			ds	5+1	; "(xxx)" + \0
+
+	.boot_rom_name
+			; 起動設定されているROMファイル名がPico側から格納される
+			ds	13	; "xxxxxxxx.xxx\0" (8+1+3+1)
+
+	.cmd
+			ds	1	; Z80 - > Pico command
+					; <0x00>:	none
+					; <0x01>:	Request file list
+					; <0x02>:	Set number of boot rom file, 0:No Select, 1-54:Selected No
+					; <0x03>:	Delete file, 1-54:Selected No
+					; <0x04>:	ROM->FILE, blockno, name strings, block data
+	.cmd_value
+			ds	1	; <0x00> no use
+					; <0x01> no use
+					; <0x02> Selected No
+					; <0x03> Selected No
+					; <0x04> Block No 0:4000h-5fffh, 1:6000-7fffh, 2:8000h-9fffh, 3:a000h-bfffh, 4:c000h-ffffh
+					; <0x05> Selected No
+
+	.cmd_fwr_name	; <0x04> [0-7]NameStrings, "0-9,a-z,A-Z", terminater is 0x20 or 0x00.
+			ds	8+1	; <0x05>   〃
+
+	.cmd_res
+			; .cmd にコマンドを書く前に 0 にしておくこと。.cmdにコマンドを書き込んだ後、
+			; ここに.cmdに書き込んだ値と同じ値が格納される
+			ds	1	; 
+
+;================================================================================================
+;CT-ARK(Pico)との通信を行うためのエリアB/C（BとCの領域は共用）
+;================================================================================================
+org 0x6000
+MSXPICOIF_B:
+	.status
+			ds	1	;	0:no sd card
+	.num	; <0x01>コマンドに格納される
+			ds	1	;	件数
+	.file_list
+			; <0x01>コマンドに格納される
+			ds	756	;	((BOOT MARK '*'or' ')[1] + FILE NAME[12] + \0) * 3*18
+
+org 0x6000
+MSXPICOIF_C:
+	.block_data
+			; <0x04> ファイルに格納する0x2000バイトのデータkのデータがどの位置のデータかは、
+			; 		 .cmd_valueで指定する。必ず.cmd_value 0から始めること
+			ds	0x2000
+
+

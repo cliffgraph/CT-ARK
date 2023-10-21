@@ -1,0 +1,12 @@
+﻿#pragma once
+
+#include "ff.h"
+#include "diskio.h"
+
+void sd_setupSpiSpeed();
+int sd_fatMakdir(const char *pPath);
+int sd_fatWriteFileTo(const char *pFileName, const char *pBuff, int size, bool bAppend = false);
+bool sd_fatReadFileFrom(const char *pFileName, const int buffSize, uint8_t *pBuff, UINT *pReadSize);
+bool sd_fatExistFile(const char *pFileName);
+bool sd_faRemoveFile(const char *pFileName);
+
