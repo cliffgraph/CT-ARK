@@ -1,5 +1,5 @@
 # CT-ARK
-by Harumakkin. 2023/10/02
+by Harumakkin. 2023/10/28
 
 ![ct-ark-04a](docs/pics/pic_ct-ark-04a_001.png)
 **fig.1 CT-ARK-04A**
