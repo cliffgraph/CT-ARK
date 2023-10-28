@@ -87,8 +87,7 @@ bool sd_fatExistFile(const char *pFileName)
 	return true;
 }
 
-
-bool sd_faRemoveFile(const char *pFileName)
+bool sd_fatRemoveFile(const char *pFileName)
 {
     FRESULT  ret;
     ret = f_mount( &g_fs, "", 1 );
@@ -100,4 +99,16 @@ bool sd_faRemoveFile(const char *pFileName)
 	return bResult;
 }
 
+uint32_t sd_fatGetFileSize(const char *pFileName)
+{
+    FRESULT  ret;
+    ret = f_mount( &g_fs, "", 1 );
+    if( ret != FR_OK ) {
+        return false;
+    }
+	FILINFO info;
+	ret = f_stat(pFileName, &info);
+	const uint32_t sz = (ret==FR_OK) ? info.fsize : 0;
+	return sz;
+}
 

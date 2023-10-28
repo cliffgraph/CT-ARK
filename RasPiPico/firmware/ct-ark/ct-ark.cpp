@@ -78,9 +78,9 @@ const uint8_t *g_pFlashRom = (const uint8_t *)(XIP_BASE + FLASH_ROM_TOP_ADDRESS)
 
 static char g_RomName[8+1+3+1];
 
-static void clearRomName()
+static void clearRomName(char *p)
 {
-	strcpy(g_RomName, "...         ");		// 12-length
+	strcpy(p, "...         ");		// 12-length
 	return;
 }
 
@@ -196,17 +196,44 @@ static bool loadBootNameFile(const char *pNameArea)
 	return bGood;
 }
 
-static bool loadRomImage(const char *pFname)
+static bool loadSysProgram(const char *pFname)
 {
+	static const UINT SIZE_ROM32K = 32*1024;
+
 	bool bGood = false;
 	UINT readSize = 0;
+	sprintf(workPath, "%s\\%s", pSDWORKDIR, pFname);
+	if(sd_fatReadFileFrom(workPath, SIZE_ROM32K, (uint8_t*)g_pMemSts[1]/*page.1*/, &readSize) ) {
+		if( readSize <= SIZE_ROM32K ){
+			bGood = true;
+		}
+	}
+	return bGood;
+}
+
+static bool loadRomImage(const char *pFname)
+{
+	static const UINT SIZE_ROM16K = 16*1024;
 	static const UINT SIZE_ROM32K = 32*1024;
 
 	sprintf(workPath, "%s\\%s", pSDWORKDIR, pFname);
-	if(sd_fatReadFileFrom(workPath, SIZE_ROM32K, (uint8_t*)g_pMemSts[1]/*page.1*/, &readSize) ) {
-		if( readSize <= SIZE_ROM32K ) {
-			bGood = true;
-		}
+
+	uint32_t fsize = sd_fatGetFileSize(workPath);
+	uint8_t *pDst = nullptr;
+	if( fsize <= SIZE_ROM16K ) {
+		pDst = (uint8_t*)g_pMemSts[2];	/*page.2*/
+	}
+	else if( fsize <= SIZE_ROM32K ) {
+		pDst = (uint8_t*)g_pMemSts[1];	/*page.1-*/
+	}
+	else {
+		pDst = (uint8_t*)g_pMemSts[0];	/*page.0-3*/
+	}
+
+	bool bGood = false;
+	UINT readSize = 0;
+	if(pDst != nullptr && sd_fatReadFileFrom(workPath, fsize, pDst, &readSize) ) {
+		bGood = (readSize==fsize) ? true : false;
 	}
 	return bGood;
 }
@@ -297,7 +324,7 @@ static void taskType_32kROM(
 
 // CT-ARKメニューモード用
 static const uint8_t g_pStrMagicWord[] = "OPEN THE ARK";
-static const uint8_t g_pStrVer[] = "0.83\0";
+static const uint8_t g_pStrVer[] = "0.84\0";
 
 #if SYS_CLK_KHZ == _u(125000)
 static const uint8_t g_pStrClock[] = "(125)\0";
@@ -639,7 +666,7 @@ static void Core0Task()
 				{
 					int no = pIf_A->cmd_value;
 					if( no == 0 ){
-						clearRomName();
+						clearRomName(g_RomName);
 						saveBootNameFile(g_RomName, sizeof(g_RomName));
 					}
 					else if( no <= (int)pIf_BC->B.num_files && pIf_BC->B.status != 0) {
@@ -657,9 +684,10 @@ static void Core0Task()
 					if( 0 < no && no <= (int)pIf_BC->B.num_files && pIf_BC->B.status != 0) {
 						char *p = (char*)pIf_BC->B.files[no-1].name;
 						if( strcmp(p, g_RomName) == 0 ) {
-							clearRomName();
+							clearRomName(g_RomName);
 						}
-						sd_faRemoveFile(p);
+						sprintf(workPath, "%s\\%s", pSDWORKDIR, p);
+						sd_fatRemoveFile(workPath);
 						makeUpFileList(&(pIf_BC->B));
 						strcpy((char*)pIf_A->boot_rom_name, g_RomName);
 					}
@@ -729,11 +757,10 @@ static void Core0Task()
 						if( 0 < no && no <= (int)pIf_BC->B.num_files && pIf_BC->B.status != 0) {
 							const char *pName = (char*)pIf_BC->B.files[no-1].name;
 							sprintf(workPath, "%s\\%s", pSDWORKDIR, pName);
-							volatile uint8_t *pRom = g_Segments[MEM_SEGMENT_NUM-2].mem;	// 一時領域 16KB
 							volatile uint8_t *pBas = g_Segments[MEM_SEGMENT_NUM-1].mem;	// 一時領域 16KB
 							const int sizeBas = 16*1024*1;
 							UINT readSize;
-							if( sd_fatReadFileFrom(pName, sizeBas, (uint8_t*)pBas, &readSize) ) {
+							if( sd_fatReadFileFrom(workPath, sizeBas, (uint8_t*)pBas, &readSize) ) {
 								if( t_ReassignmentAddress(pBas) ) {
 									static const uint8_t head[] = {
 										'A', 'B',
@@ -741,11 +768,9 @@ static void Core0Task()
 										0x10,0x80,	// TEXT
 										0x00,0x00,0x00,0x00,0x00,0x00,
 									};
-									pRom[0] = 0x00;
 									sprintf(workPath, "%s\\%s.ROM", pSDWORKDIR, name);
 									makeDirWork();
-									sd_fatWriteFileTo(workPath, (const char*)pRom, MEM_SEGMENT_SIZE);
-									sd_fatWriteFileTo(workPath, (const char*)head, sizeof(head), true/*append*/);
+									sd_fatWriteFileTo(workPath, (const char*)head, sizeof(head));
 									sd_fatWriteFileTo(workPath, (const char*)pBas, readSize, true/*append*/);
 								}
 							}
@@ -773,11 +798,14 @@ int main()
 	sleep_ms(1);
 
 	disk_initialize(0);
-	clearRomName();
+	clearRomName(g_RomName);
 
 	g_bMarked = false;
 	g_SystemMode = SYSMODE::RAM;
 
+ 	for( int t = 0; t < MEM_SEGMENT_NUM; t++){
+		g_Segments[t].mem[0] = 0x00;
+	}
  	for( int t = 0; t < MSX_PAGE_NUM; t++){
  		setMemMap(t, t);
  	}
@@ -791,7 +819,7 @@ int main()
 				g_SystemMode = SYSMODE::ROM32K;
 			}
 			else {
-				clearRomName();
+				clearRomName(g_RomName);
 			}
 		}
 		if( g_SystemMode != SYSMODE::ROM32K ) {
@@ -806,7 +834,7 @@ int main()
 	//	読み込めなかった		-> FlashROM
 	else {
 		loadBootNameFile(g_RomName);
-		if( loadRomImage("ct-ark.sys") ) {
+		if( loadSysProgram("ct-ark.sys") ) {
 			g_SystemMode = SYSMODE::CTARKMENU;
 		}
 		else {
