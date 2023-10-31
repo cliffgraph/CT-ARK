@@ -832,10 +832,19 @@ FUNC_FWRITE_PROGRESS:
 		ld		L, (IX+0)
 		ld		H, (IX+1)
 		ld		(FWRPROG.read_ptr), HL
+		; 読み取りアドレスを表示
+		ld		C, L
+		ld		B, H
+		ld		HL, WA.str_num
+		call	HEX16TOSTR
+		ld		HL, 0x1B14			; locate()
+		call	B_POSIT
+		ld		HL, WA.str_num
+		call	PRINT_STR
+		;
 		ld		HL, MSXPICOIF_C.block_data
 		ld		(FWRPROG.write_ptr), HL
 		ld		BC, 0x2000
-
 	.loop1
 		push	BC
 		call	GET_CHAR
@@ -844,16 +853,7 @@ FUNC_FWRITE_PROGRESS:
 		jr		z, .abort
 		;
 		push	BC
-		ld		BC, (FWRPROG.read_ptr)
-		push	BC
-		; 読み取りアドレスを表示
-		ld		HL, WA.str_num
-		call	HEX16TOSTR
-		ld		HL, 0x1B14			; locate()
-		call	B_POSIT
-		ld		HL, WA.str_num
-		call	PRINT_STR
-		pop		HL ;<-BC
+		ld		HL, (FWRPROG.read_ptr)
 		ld		A, 0x02				; basic slot no.2
 		call	B_RDSLT				; A = read value
 		inc		HL
