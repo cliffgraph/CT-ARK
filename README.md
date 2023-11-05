@@ -1,11 +1,11 @@
 # CT-ARK
-by Harumakkin. 2023/10/-2023/10/31
+by Harumakkin. 2023/10/22 - 2023/11/05
 
 ![ct-ark-04a](docs/pics/pic_ct-ark-04a_001.png)
 **fig.1 CT-ARK-04A**
 
 ## What is this?
-- CT-ARKは、MSX用ROMカートリッジエミュレーターです。32KB ROMカートリッジの内容を読みだしてSDカード内にファイルとして保存したり、その保存ファイルを使用したROMカートリッジとして動作させたりすることができます。
+- CT-ARKはMSX用ROMカートリッジエミュレーターです。32KB ROMカートリッジの内容を読みだしてSDカード内にファイルとして保存したり、その保存ファイルを使用したROMカートリッジとして動作させたりすることができます。
 - ver0.84現在、64KB以下の容量のROMカートリッジのみ模倣できます（サイズにより割り当てられるアドレスが異なります）。
 - CT-ARKカートリッジの上部にはモードスイッチがあり、CT-ARK MENUを起動させるか、設定したROMカートリッジファイルで起動するかを選択することができます。
 - CT-ARK MENUではSDカード内のファイルを一覧表示するする、選択ROMルを削除する、Slot2に挿したROMカートリッジを読み込んでSDカードにファイル保存する、起動するROMカートリッジファイルを選択する、を行うことができます。
@@ -53,11 +53,11 @@ Srot2に挿した32KB ROMカートリッジからイメージを読みだしてR
 
 ## CT-ARKを作る
 部品表にある部品の収集、プリント基板の製造、組み立て、ファームウェアの書き込みの作業が必要です。完成品はありません。 PCBを発注できて、表面実装部品をはんだ付けできて、Raspberry Pi Picoにu2fファイルを書き込みができる必要があります。
-- 部品表（CT-ARK-04A_部品表.xlsx）
-- 回路図（CT-ARK-04A_schematic.pdf）
-- ガーバーデータ(gerber_CT-ARK-04B.zip)
+- 部品表（CT-ARK-04C_部品表.xlsx）
+- 回路図（CT-ARK-04C_schematic.pdf）
+- ガーバーデータ(gerber_CT-ARK-04C.zip)
 - microSDカード
-- Raspberry Pi Pico ファームウェア ct-ark.vXXX.240mhz.uf2 
+- Raspberry Pi Pico ファームウェア ct-ark.vXXX.YYYmhz.uf2 
 - CT-ARK MENU プログラム ct-ark.sys
 
 Raspberry Pi Picoに書き込むファームウェア(u2fファイル)は、125Mhz版と240Mhz版の２種類があります。（ファイル名のXXX部分はバージョン番号）。
@@ -111,6 +111,12 @@ CT-ARKのファームウェアとそのソースコード、回路図データ�
 ## CT-ARKが使用しているソフトウェア
 FatFs
 Copyright (C) 20xx, ChaN, all right reserved. http://elm-chan.org/fsw/ff/00index_e.html
+
+## 修正履歴
+- 2023/11/05, CT-ARK-04C
+  CT-ARK-04BのPCBに間違い有り。MSX側の41,43端子が基板内のGNDに接続されておらず、それを修正した
+- 2023/10/28, CT-ARK-04B
+CT-ARK-04B リリース
 
 ## 余談
 CT-ARK製作の経緯：前回のFD-ARKに引き続き、RaspberryPiPicoを使ったMSX関連の何かを製作したかった、それだけです。ROMカートリッジエミュレーターをつくることだけを目的としていたらRaspberryPiPicoは使用しなかったでしょう。
